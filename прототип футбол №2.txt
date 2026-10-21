@@ -1,0 +1,621 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FC Football</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;background:#101827;color:white;
+  font-family:Arial,sans-serif;text-align:center
+}
+h1{margin:14px 5px;font-size:28px}
+.menu{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin:12px}
+button{
+  border:0;border-radius:10px;padding:12px 16px;
+  background:#2563eb;color:white;font-size:15px;
+  font-weight:bold;cursor:pointer;touch-action:manipulation
+}
+button.active{background:#16a34a}
+button:active{filter:brightness(1.3)}
+#score{font-size:25px;margin:12px}
+canvas{
+  display:block;width:min(96vw,900px);height:auto;
+  margin:10px auto;border:3px solid white;
+  border-radius:8px;touch-action:none
+}
+.info{
+  max-width:900px;margin:12px auto;padding:14px;
+  background:#1e293b;border-radius:12px;line-height:1.8
+}
+.small{font-size:13px;color:#cbd5e1}
+</style>
+</head>
+<body>
+
+<h1>⚽ FC FOOTBALL</h1>
+
+<div class="menu">
+  <button id="friend" class="active">👥 Играть с другом</button>
+  <button id="ai">🤖 Играть с ИИ</button>
+  <button id="restart">🔄 Новая игра</button>
+</div>
+
+<h2 id="score">🔵 0 : 0 🔴</h2>
+<canvas id="field" width="900" height="520"></canvas>
+
+<div class="info">
+  <b>🔵 ИГРОК 1</b><br>
+  Ц — вверх · Ф — влево · Ы — вниз · В — вправо<br>
+  Пробел — удар
+  <hr>
+  <b>🔴 ИГРОК 2</b><br>
+  Щ — вверх · Л — влево · Д — вниз · Ж — вправо<br>
+  Enter — удар
+  <hr>
+  <b>🧤 ВРАТАРИ</b><br>
+  Вратари двигаются вдоль ворот, следят за мячом и иногда отбивают удары.
+  <p id="status" class="small">Режим: игра вдвоём</p>
+  <p id="message">Матч начался!</p>
+</div>
+
+<script>
+const canvas = document.getElementById("field");
+const ctx = canvas.getContext("2d");
+const W = 900, H = 520;
+const keys = {};
+const pressed = {};
+
+let mode = "friend";
+let blueScore = 0, redScore = 0;
+let gameTime = 180;
+let last = performance.now();
+let goalPause = 0;
+let aiShotCooldown = 0;
+let gameEnded = false;
+let message = "МАТЧ НАЧАЛСЯ!";
+
+const p1 = {
+  x:180,y:260,r:17,speed:3.7,
+  color:"#1685ff",num:10
+};
+const p2 = {
+  x:720,y:260,r:17,speed:3.5,
+  color:"#ef3434",num:9
+};
+
+const ball = {
+  x:450,y:260,r:9,vx:0,vy:0
+};
+
+// Вратарь синей команды защищает левые ворота.
+// Вратарь красной команды защищает правые ворота.
+const keeperBlue = {
+  x:43,y:260,r:13,speed:2.7,
+  color:"#facc15",dive:0,cooldown:0
+};
+const keeperRed = {
+  x:857,y:260,r:13,speed:2.7,
+  color:"#facc15",dive:0,cooldown:0
+};
+
+const goalTop = 195;
+const goalBottom = 325;
+
+function setMessage(text){
+  message = text;
+  document.getElementById("message").textContent = text;
+}
+
+function updateScore(){
+  document.getElementById("score").textContent =
+    `🔵 ${blueScore} : ${redScore} 🔴  |  ${Math.ceil(gameTime)} сек`;
+}
+
+function resetPositions(){
+  p1.x=180; p1.y=260;
+  p2.x=720; p2.y=260;
+
+  ball.x=450; ball.y=260;
+  ball.vx=0; ball.vy=0;
+
+  keeperBlue.x=43; keeperBlue.y=260;
+  keeperBlue.dive=0; keeperBlue.cooldown=0;
+
+  keeperRed.x=857; keeperRed.y=260;
+  keeperRed.dive=0; keeperRed.cooldown=0;
+
+  aiShotCooldown=0;
+}
+
+function reset(){
+  blueScore=0;
+  redScore=0;
+  gameTime=180;
+  goalPause=0;
+  gameEnded=false;
+  resetPositions();
+  setMessage("МАТЧ НАЧАЛСЯ! ЗАБЕЙ ГОЛ!");
+  updateScore();
+}
+
+function setMode(newMode){
+  mode=newMode;
+  document.getElementById("friend").classList.toggle(
+    "active",mode==="friend"
+  );
+  document.getElementById("ai").classList.toggle(
+    "active",mode==="ai"
+  );
+  document.getElementById("status").textContent =
+    mode==="ai" ? "Режим: ты играешь против ИИ" :
+    "Режим: игра вдвоём на одном компьютере";
+  reset();
+}
+
+document.getElementById("friend").onclick=()=>setMode("friend");
+document.getElementById("ai").onclick=()=>setMode("ai");
+document.getElementById("restart").onclick=reset;
+
+// Русские клавиши и альтернативы по физическому расположению.
+function keyName(e){
+  const k=e.key.toLowerCase();
+
+  const map={
+    "ц":"p1up",
+    "ф":"p1left",
+    "ы":"p1down",
+    "в":"p1right",
+    "щ":"p2up",
+    "л":"p2left",
+    "д":"p2down",
+    "ж":"p2right",
+    " ":"shoot1",
+    "enter":"shoot2"
+  };
+
+  const codes={
+    KeyW:"p1up",
+    KeyA:"p1left",
+    KeyS:"p1down",
+    KeyD:"p1right",
+    KeyO:"p2up",
+    KeyK:"p2left",
+    KeyL:"p2down",
+    Semicolon:"p2right",
+    Space:"shoot1",
+    Enter:"shoot2"
+  };
+
+  return map[k] || codes[e.code] || k;
+}
+
+window.addEventListener("keydown",e=>{
+  const k=keyName(e);
+
+  if(k==="shoot1" || k==="shoot2") e.preventDefault();
+
+  keys[k]=true;
+
+  if(!e.repeat && !pressed[k]){
+    pressed[k]=true;
+
+    if(k==="shoot1") shoot(p1,1);
+    if(k==="shoot2" && mode==="friend") shoot(p2,-1);
+  }
+});
+
+window.addEventListener("keyup",e=>{
+  const k=keyName(e);
+  keys[k]=false;
+  pressed[k]=false;
+});
+
+window.addEventListener("blur",()=>{
+  for(const k in keys) keys[k]=false;
+  for(const k in pressed) pressed[k]=false;
+});
+
+function movePlayer(p,up,left,down,right,dt){
+  let dx=(keys[right]?1:0)-(keys[left]?1:0);
+  let dy=(keys[down]?1:0)-(keys[up]?1:0);
+  const len=Math.hypot(dx,dy)||1;
+
+  p.x+=dx/len*p.speed*dt*60;
+  p.y+=dy/len*p.speed*dt*60;
+
+  p.x=Math.max(45,Math.min(W-45,p.x));
+  p.y=Math.max(40,Math.min(H-40,p.y));
+}
+
+// ИИ преследует мяч и пытается забить в левые ворота.
+function moveAI(dt){
+  let tx=ball.x;
+  let ty=ball.y;
+
+  if(ball.x < p2.x-10){
+    tx=ball.x+14;
+  } else {
+    tx=ball.x-18;
+  }
+
+  const dx=tx-p2.x;
+  const dy=ty-p2.y;
+  const len=Math.hypot(dx,dy)||1;
+
+  p2.x+=dx/len*p2.speed*dt*60;
+  p2.y+=dy/len*p2.speed*dt*60;
+
+  p2.x=Math.max(45,Math.min(W-45,p2.x));
+  p2.y=Math.max(40,Math.min(H-40,p2.y));
+
+  aiShotCooldown-=dt;
+
+  if(Math.hypot(p2.x-ball.x,p2.y-ball.y)<34 &&
+     aiShotCooldown<=0){
+    shoot(p2,-1);
+    aiShotCooldown=0.8;
+  }
+}
+
+// Удар с проверкой расстояния до мяча.
+function shoot(p,dir){
+  if(goalPause>0 || gameEnded) return;
+
+  const d=Math.hypot(p.x-ball.x,p.y-ball.y);
+  if(d>47){
+    if(p===p1) setMessage("Подойди ближе к мячу!");
+    return;
+  }
+
+  // Направление удара — к воротам соперника.
+  let dx=dir;
+  let dy=(260-ball.y)/75;
+  const len=Math.hypot(dx,dy)||1;
+
+  ball.vx=dx/len*10.5;
+  ball.vy=dy/len*8;
+
+  setMessage("⚽ УДАР ПО ВОРОТАМ!");
+}
+
+// Игрок может толкать мяч.
+function collide(p){
+  const dx=ball.x-p.x;
+  const dy=ball.y-p.y;
+  const d=Math.hypot(dx,dy)||1;
+
+  if(d<p.r+ball.r){
+    const nx=dx/d,ny=dy/d;
+
+    ball.x=p.x+nx*(p.r+ball.r+1);
+    ball.y=p.y+ny*(p.r+ball.r+1);
+
+    ball.vx+=nx*1.3;
+    ball.vy+=ny*1.3;
+
+    ball.vx=Math.max(-12,Math.min(12,ball.vx));
+    ball.vy=Math.max(-12,Math.min(12,ball.vy));
+  }
+}
+
+// Вратарь следит за мячом, но остаётся около линии ворот.
+function updateKeeper(k,dt){
+  const targetY=Math.max(207,Math.min(313,ball.y));
+  const diff=targetY-k.y;
+  const maxMove=k.speed*dt*60;
+
+  k.y+=Math.max(-maxMove,Math.min(maxMove,diff));
+
+  if(k.dive>0) k.dive-=dt;
+  if(k.cooldown>0) k.cooldown-=dt;
+}
+
+// Проверка сейва. Вероятность успешного отражения — 72%.
+function keeperSave(k,defendingRightGoal){
+  if(k.cooldown>0) return false;
+
+  const nearGoal=defendingRightGoal
+    ? ball.x>825 && ball.x<875
+    : ball.x>25 && ball.x<75;
+
+  if(!nearGoal) return false;
+  if(ball.y<goalTop-15 || ball.y>goalBottom+15) return false;
+
+  const d=Math.hypot(ball.x-k.x,ball.y-k.y);
+
+  if(d<k.r+ball.r+8){
+    k.dive=0.35;
+    k.cooldown=0.45;
+
+    if(Math.random()<0.72){
+      // Отбиваем мяч обратно в поле.
+      ball.vx=defendingRightGoal
+        ? -Math.max(5,Math.abs(ball.vx)*0.85)
+        : Math.max(5,Math.abs(ball.vx)*0.85);
+
+      ball.vy=(Math.random()-0.5)*8;
+
+      ball.x+=defendingRightGoal?-9:9;
+
+      setMessage("🧤 НЕВЕРОЯТНЫЙ СЕЙВ ВРАТАРЯ!");
+      return true;
+    } else {
+      // Вратарь не успел отбить удар.
+      setMessage("ВРАТАРЬ НЕ ДОТЯНУЛСЯ!");
+    }
+  }
+  return false;
+}
+
+function scoreGoal(blueScored){
+  if(blueScored) blueScore++;
+  else redScore++;
+
+  setMessage(blueScored
+    ? "⚽ ГОООЛ! СИНЯЯ КОМАНДА!"
+    : "⚽ ГОООЛ! КРАСНАЯ КОМАНДА!");
+
+  goalPause=1.3;
+  resetPositions();
+  updateScore();
+}
+
+function update(dt){
+  if(gameEnded) return;
+
+  if(goalPause>0){
+    goalPause-=dt;
+    return;
+  }
+
+  gameTime-=dt;
+
+  if(gameTime<=0){
+    gameTime=0;
+    gameEnded=true;
+
+    setMessage(
+      blueScore>redScore ? "🏆 ПОБЕДА СИНИХ!" :
+      redScore>blueScore ? "🏆 ПОБЕДА КРАСНЫХ!" :
+      "🤝 НИЧЬЯ!"
+    );
+
+    updateScore();
+    return;
+  }
+
+  movePlayer(p1,"p1up","p1left","p1down","p1right",dt);
+
+  if(mode==="friend"){
+    movePlayer(p2,"p2up","p2left","p2down","p2right",dt);
+  }else{
+    moveAI(dt);
+  }
+
+  // Сначала взаимодействие игроков с мячом.
+  collide(p1);
+  collide(p2);
+
+  // Вратари реагируют на положение мяча.
+  updateKeeper(keeperBlue,dt);
+  updateKeeper(keeperRed,dt);
+
+  ball.x+=ball.vx*dt*60;
+  ball.y+=ball.vy*dt*60;
+
+  ball.vx*=Math.pow(0.986,dt*60);
+  ball.vy*=Math.pow(0.986,dt*60);
+
+  // Сейвы выполняются до проверки гола.
+  keeperSave(keeperBlue,false);
+  keeperSave(keeperRed,true);
+
+  // Верхняя и нижняя границы поля.
+  if(ball.y<30){
+    ball.y=30;
+    ball.vy=Math.abs(ball.vy)*0.8;
+  }
+
+  if(ball.y>H-30){
+    ball.y=H-30;
+    ball.vy=-Math.abs(ball.vy)*0.8;
+  }
+
+  // Левые ворота — гол красных.
+  if(ball.x<25){
+    if(ball.y>goalTop && ball.y<goalBottom){
+      scoreGoal(false);
+      return;
+    }else{
+      ball.x=25;
+      ball.vx=Math.abs(ball.vx)*0.8;
+    }
+  }
+
+  // Правые ворота — гол синих.
+  if(ball.x>W-25){
+    if(ball.y>goalTop && ball.y<goalBottom){
+      scoreGoal(true);
+      return;
+    }else{
+      ball.x=W-25;
+      ball.vx=-Math.abs(ball.vx)*0.8;
+    }
+  }
+
+  updateScore();
+}
+
+function drawField(){
+  ctx.fillStyle="#167a38";
+  ctx.fillRect(0,0,W,H);
+
+  for(let i=0;i<10;i++){
+    ctx.fillStyle=i%2?"#188341":"#147435";
+    ctx.fillRect(i*W/10,0,W/10,H);
+  }
+
+  ctx.strokeStyle="white";
+  ctx.lineWidth=3;
+
+  ctx.strokeRect(25,20,W-50,H-40);
+
+  ctx.beginPath();
+  ctx.moveTo(W/2,20);
+  ctx.lineTo(W/2,H-20);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(W/2,H/2,75,0,Math.PI*2);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(W/2,H/2,4,0,Math.PI*2);
+  ctx.fillStyle="white";
+  ctx.fill();
+
+  ctx.strokeRect(25,145,120,230);
+  ctx.strokeRect(W-145,145,120,230);
+  ctx.strokeRect(25,200,50,120);
+  ctx.strokeRect(W-75,200,50,120);
+
+  // Сетки ворот.
+  ctx.fillStyle="#d1d5db";
+  ctx.fillRect(0,goalTop,25,goalBottom-goalTop);
+  ctx.fillRect(W-25,goalTop,25,goalBottom-goalTop);
+
+  ctx.strokeStyle="#64748b";
+  ctx.lineWidth=1;
+
+  for(let y=goalTop+10;y<goalBottom;y+=10){
+    ctx.beginPath();
+    ctx.moveTo(0,y);
+    ctx.lineTo(24,y);
+    ctx.moveTo(W-24,y);
+    ctx.lineTo(W,y);
+    ctx.stroke();
+  }
+}
+
+function drawPlayer(p){
+  ctx.fillStyle="rgba(0,0,0,.25)";
+  ctx.beginPath();
+  ctx.ellipse(p.x,p.y+13,18,7,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle=p.color;
+  ctx.beginPath();
+  ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle="white";
+  ctx.lineWidth=2;
+  ctx.stroke();
+
+  ctx.fillStyle="white";
+  ctx.font="bold 14px Arial";
+  ctx.textAlign="center";
+  ctx.textBaseline="middle";
+  ctx.fillText(p.num,p.x,p.y);
+}
+
+// Рисуем вратаря, перчатки и прыжок в сторону мяча.
+function drawKeeper(k){
+  ctx.save();
+
+  let offsetX=0;
+  if(k.dive>0){
+    offsetX=(ball.x<k.x?-8:8)*(k.dive/0.35);
+  }
+
+  ctx.translate(offsetX,0);
+
+  ctx.fillStyle="rgba(0,0,0,.25)";
+  ctx.beginPath();
+  ctx.ellipse(k.x,k.y+10,16,6,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle=k.color;
+  ctx.beginPath();
+  ctx.arc(k.x,k.y,k.r,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle="white";
+  ctx.lineWidth=2;
+  ctx.stroke();
+
+  // Перчатки
+  ctx.fillStyle="#ffffff";
+  ctx.beginPath();
+  ctx.arc(k.x-12,k.y,4,0,Math.PI*2);
+  ctx.arc(k.x+12,k.y,4,0,Math.PI*2);
+  ctx.fill();
+
+  // Номер вратаря
+  ctx.fillStyle="#111827";
+  ctx.font="bold 10px Arial";
+  ctx.textAlign="center";
+  ctx.textBaseline="middle";
+  ctx.fillText("1",k.x,k.y);
+
+  ctx.restore();
+}
+
+function drawBall(){
+  ctx.fillStyle="white";
+  ctx.beginPath();
+  ctx.arc(ball.x,ball.y,ball.r,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle="#111827";
+  ctx.lineWidth=2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(ball.x-4,ball.y);
+  ctx.lineTo(ball.x+4,ball.y);
+  ctx.moveTo(ball.x,ball.y-4);
+  ctx.lineTo(ball.x,ball.y+4);
+  ctx.stroke();
+}
+
+function draw(){
+  drawField();
+
+  drawKeeper(keeperBlue);
+  drawKeeper(keeperRed);
+
+  drawPlayer(p1);
+  drawPlayer(p2);
+  drawBall();
+
+  if(goalPause>0 || gameEnded){
+    ctx.fillStyle="rgba(0,0,0,.72)";
+    ctx.fillRect(150,215,600,82);
+
+    ctx.fillStyle="white";
+    ctx.font="bold 25px Arial";
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+    ctx.fillText(message,W/2,255);
+  }
+}
+
+function loop(now){
+  const dt=Math.min((now-last)/1000,0.04);
+  last=now;
+
+  update(dt);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
